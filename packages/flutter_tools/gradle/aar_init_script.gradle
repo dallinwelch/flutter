@@ -116,12 +116,49 @@ allprojects {
    apply plugin: "maven-publish"
 }
 
+afterProject { project ->
+    // Exit early if either:
+    // 1. The project doesn't have the Android Gradle plugin applied.
+    // 2. The project has already defined which variants to publish (trying to re-define which
+    //    variants to publish will result in an error).
+    if (!project.hasProperty("android")) {
+        return
+    }
+    if (project.android.publishing.singleVariants.size() != 0) {
+        return
+    }
+
+    Closure addSingleVariants = {buildType ->
+        if (!project.android.productFlavors.isEmpty()) {
+            project.android.productFlavors.all{productFlavor ->
+                project.android.publishing.singleVariant(
+                        productFlavor.name + buildType.name.capitalize()
+                ) {
+                    withSourcesJar()
+                    withJavadocJar()
+                }
+            }
+        } else {
+            project.android.publishing.singleVariant(buildType.name) {
+                withSourcesJar()
+                withJavadocJar()
+            }
+        }
+    }
+
+    project.android.buildTypes.all(addSingleVariants)
+}
+
 projectsEvaluated {
     assert rootProject.hasProperty("is-plugin")
     if (rootProject.property("is-plugin").toBoolean()) {
         assert rootProject.hasProperty("output-dir")
         // In plugin projects, the root project is the plugin.
         configureProject(rootProject, rootProject.property("output-dir"))
+        return
+    }
+    if (rootProject.name == "gradle") {
+        // Skip the "gradle" project, we are looking only for the "android_generated" project.
         return
     }
     // The module project is the `:flutter` subproject.

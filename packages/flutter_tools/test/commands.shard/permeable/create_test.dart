@@ -7,6 +7,8 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:args/command_runner.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:file_testing/file_testing.dart';
 import 'package:flutter_tools/src/android/gradle_utils.dart' show templateAndroidGradlePluginVersion, templateAndroidGradlePluginVersionForModule, templateDefaultGradleVersion;
 import 'package:flutter_tools/src/android/java.dart';
@@ -30,6 +32,7 @@ import 'package:flutter_tools/src/version.dart';
 import 'package:process/process.dart';
 import 'package:pub_semver/pub_semver.dart';
 import 'package:pubspec_parse/pubspec_parse.dart';
+import 'package:unified_analytics/unified_analytics.dart';
 import 'package:uuid/uuid.dart';
 import 'package:yaml/yaml.dart';
 
@@ -63,6 +66,12 @@ const String samplesIndexJson = '''
   { "id": "sample2" }
 ]''';
 
+/// These files are generated for all project types.
+const List<String> flutterPluginsIgnores = <String>[
+  '.flutter-plugins',
+  '.flutter-plugins-dependencies',
+];
+
 void main() {
   late Directory tempDir;
   late Directory projectDir;
@@ -71,6 +80,7 @@ void main() {
   late FakeProcessManager fakeProcessManager;
   late BufferLogger logger;
   late FakeStdio mockStdio;
+  late FakeAnalytics fakeAnalytics;
 
   setUpAll(() async {
     Cache.disableLocking();
@@ -88,6 +98,10 @@ void main() {
     );
     fakeProcessManager = FakeProcessManager.empty();
     mockStdio = FakeStdio();
+    fakeAnalytics = getInitializedFakeAnalyticsInstance(
+      fs: MemoryFileSystem.test(),
+      fakeFlutterVersion: fakeFlutterVersion,
+    );
   });
 
   tearDown(() {
@@ -169,12 +183,27 @@ void main() {
         'ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage.png',
         'lib/main.dart',
       ],
+      expectedGitignoreLines: flutterPluginsIgnores,
     );
     expect(logger.statusText, contains('In order to run your application, type:'));
-    // check that we're telling them about documentation
+    // Check that we're telling them about documentation
     expect(logger.statusText, contains('https://docs.flutter.dev/'));
     expect(logger.statusText, contains('https://api.flutter.dev/'));
-    // check that the tests run clean
+
+    // Check for usage values sent in analytics
+    expect(
+      fakeAnalytics.sentEvents,
+      contains(
+        Event.commandUsageValues(
+          workflow: 'create',
+          commandHasTerminal: false,
+          createAndroidLanguage: 'java',
+          createIosLanguage: 'objc',
+        ),
+      ),
+    );
+
+    // Check that the tests run clean
     return _runFlutterTest(projectDir);
   }, overrides: <Type, Generator>{
     Pub: () => Pub.test(
@@ -187,6 +216,7 @@ void main() {
       stdio: mockStdio,
     ),
     Logger: () => logger,
+    Analytics: () => fakeAnalytics,
   });
 
   testUsingContext('can create a skeleton (list/detail) app', () async {
@@ -223,6 +253,7 @@ void main() {
         'pubspec.yaml',
         'README.md',
       ],
+      expectedGitignoreLines: flutterPluginsIgnores,
     );
     return _runFlutterTest(projectDir);
   }, overrides: <Type, Generator>{
@@ -265,22 +296,28 @@ void main() {
   });
 
   testUsingContext('creates a module project correctly', () async {
-    await _createAndAnalyzeProject(projectDir, <String>[
-      '--template=module',
-    ], <String>[
-      '.android/app/',
-      '.gitignore',
-      '.ios/Flutter',
-      '.metadata',
-      'analysis_options.yaml',
-      'lib/main.dart',
-      'pubspec.yaml',
-      'README.md',
-      'test/widget_test.dart',
-    ], unexpectedPaths: <String>[
-      'android/',
-      'ios/',
-    ]);
+    await _createAndAnalyzeProject(
+      projectDir,
+      <String>[
+        '--template=module',
+      ],
+      <String>[
+        '.android/app/',
+        '.gitignore',
+        '.ios/Flutter',
+        '.metadata',
+        'analysis_options.yaml',
+        'lib/main.dart',
+        'pubspec.yaml',
+        'README.md',
+        'test/widget_test.dart',
+      ],
+      unexpectedPaths: <String>[
+        'android/',
+        'ios/',
+      ],
+      expectedGitignoreLines: flutterPluginsIgnores,
+    );
     return _runFlutterTest(projectDir);
   }, overrides: <Type, Generator>{
     Pub: () => Pub.test(
@@ -545,6 +582,7 @@ void main() {
         'linux/flutter/generated_plugins.cmake',
         'macos/Flutter/GeneratedPluginRegistrant.swift',
       ],
+      expectedGitignoreLines: flutterPluginsIgnores,
     );
     return _runFlutterTest(projectDir);
   }, overrides: <Type, Generator>{
@@ -576,6 +614,7 @@ void main() {
         'example/android/app/src/main/java/com/example/flutter_project_example/MainActivity.java',
         'lib/flutter_project_web.dart',
       ],
+      expectedGitignoreLines: flutterPluginsIgnores,
     );
     return _runFlutterTest(projectDir.childDirectory('example'));
   }, overrides: <Type, Generator>{
@@ -670,10 +709,10 @@ void main() {
     ),
   });
 
-  testUsingContext('kotlin/swift plugin project', () async {
+  testUsingContext('kotlin/swift plugin project without Swift Package Manager', () async {
     return _createProject(
       projectDir,
-      <String>['--no-pub', '--template=plugin', '-a', 'kotlin', '--ios-language', 'swift', '--platforms', 'ios,android'],
+      <String>['--no-pub', '--template=plugin', '-a', 'kotlin', '--ios-language', 'swift', '--platforms', 'android,ios,macos'],
       <String>[
         'analysis_options.yaml',
         'android/src/main/kotlin/com/example/flutter_project/FlutterProjectPlugin.kt',
@@ -682,6 +721,9 @@ void main() {
         'example/ios/Runner/Runner-Bridging-Header.h',
         'example/lib/main.dart',
         'ios/Classes/FlutterProjectPlugin.swift',
+        'ios/Resources/PrivacyInfo.xcprivacy',
+        'macos/Classes/FlutterProjectPlugin.swift',
+        'macos/Resources/PrivacyInfo.xcprivacy',
         'lib/flutter_project.dart',
       ],
       unexpectedPaths: <String>[
@@ -694,6 +736,58 @@ void main() {
         'ios/Classes/FlutterProjectPlugin.m',
       ],
     );
+  }, overrides: <Type, Generator>{
+    // Test flags disable Swift Package Manager.
+    FeatureFlags: () => TestFeatureFlags(isMacOSEnabled: true),
+  });
+
+  testUsingContext('swift plugin project with Swift Package Manager', () async {
+    return _createProject(
+      projectDir,
+      <String>['--no-pub', '--template=plugin', '--ios-language', 'swift', '--platforms', 'ios,macos'],
+      <String>[
+        'ios/flutter_project/Package.swift',
+        'ios/flutter_project/Sources/flutter_project/FlutterProjectPlugin.swift',
+        'ios/flutter_project/Sources/flutter_project/PrivacyInfo.xcprivacy',
+        'macos/flutter_project/Package.swift',
+        'macos/flutter_project/Sources/flutter_project/FlutterProjectPlugin.swift',
+        'macos/flutter_project/Sources/flutter_project/PrivacyInfo.xcprivacy',
+      ],
+      unexpectedPaths: <String>[
+        'ios/Classes/FlutterProjectPlugin.swift',
+        'macos/Classes/FlutterProjectPlugin.swift',
+        'ios/Classes/FlutterProjectPlugin.h',
+        'ios/Classes/FlutterProjectPlugin.m',
+        'ios/Assets/.gitkeep',
+        'macos/Assets/.gitkeep',
+      ],
+    );
+  }, overrides: <Type, Generator>{
+    FeatureFlags: () => TestFeatureFlags(
+      isSwiftPackageManagerEnabled: true,
+      isMacOSEnabled: true,
+    ),
+  });
+
+  testUsingContext('objc plugin project with Swift Package Manager', () async {
+    return _createProject(
+      projectDir,
+      <String>['--no-pub', '--template=plugin', '--ios-language', 'objc', '--platforms', 'ios'],
+      <String>[
+        'ios/flutter_project/Package.swift',
+        'ios/flutter_project/Sources/flutter_project/include/flutter_project/FlutterProjectPlugin.h',
+        'ios/flutter_project/Sources/flutter_project/FlutterProjectPlugin.m',
+        'ios/flutter_project/Sources/flutter_project/PrivacyInfo.xcprivacy',
+      ],
+      unexpectedPaths: <String>[
+        'ios/Classes/FlutterProjectPlugin.swift',
+        'ios/Classes/FlutterProjectPlugin.h',
+        'ios/Classes/FlutterProjectPlugin.m',
+        'ios/Assets/.gitkeep',
+      ],
+    );
+  }, overrides: <Type, Generator>{
+    FeatureFlags: () => TestFeatureFlags(isSwiftPackageManagerEnabled: true),
   });
 
   testUsingContext('plugin project with custom org', () async {
@@ -744,11 +838,41 @@ void main() {
         <String>['--no-pub', '--template=plugin', '--project-name', 'xyz-xyz', '--platforms', 'android,ios',],
         <String>[],
       ),
-      allOf(
-        throwsToolExit(message: '"xyz-xyz" is not a valid Dart package name.'),
-        throwsToolExit(message: 'Try "xyz_xyz" instead.'),
+      throwsToolExit(message:
+        '"xyz-xyz" is not a valid Dart package name. Try "xyz_xyz" instead.\n'
+        '\n'
+        'The name should consist of lowercase words separated by underscores, '
+        '"like_this". Use only basic Latin letters and Arabic digits: [a-z0-9_], '
+        'and ensure the name is a valid Dart identifier (i.e. it does not start '
+        'with a digit and is not a reserved word).\n'
+        '\n'
+        'See https://dart.dev/tools/pub/pubspec#name for more information.'
       ),
     );
+  });
+
+  testUsingContext('recreating project uses pubspec name as project name fallback', () async {
+    final Directory outputDirectory = tempDir.childDirectory('invalid-name');
+
+    // Create the new project with a valid project name,
+    // but with a directory name that would be an invalid project name.
+    await _createProject(
+      outputDirectory,
+      <String>['--no-pub', '--template=app', '--project-name', 'valid_name', '--platforms' , 'android'],
+      <String>[]
+    );
+
+    // Now amend a new platform to the project, but omit the project name, so the fallback project name is used.
+    await _createProject(
+      outputDirectory,
+      <String>['--no-pub', '--template=app', '--platforms', 'web'],
+      <String>[]
+    );
+
+    // Verify that the pubspec name was used as project name for the web project.
+    final File webOutputFile = outputDirectory.childDirectory('web').childFile('index.html');
+
+    expect(webOutputFile.readAsStringSync(), contains('<title>valid_name</title>'));
   });
 
   testUsingContext('module project with pub', () async {
@@ -850,7 +974,7 @@ void main() {
     // Import for the new embedding class.
     expect(mainActivity.contains('import io.flutter.embedding.android.FlutterActivity'), true);
 
-    expect(logger.statusText, isNot(contains('https://github.com/flutter/flutter/wiki/Upgrading-pre-1.12-Android-projects')));
+    expect(logger.statusText, isNot(contains('https://github.com/flutter/flutter/blob/main/docs/platforms/android/Upgrading-pre-1.12-Android-projects.md')));
   }, overrides: <Type, Generator>{
     Logger: () => logger,
   });
@@ -1263,7 +1387,7 @@ void main() {
     final File xcodeProjectFile = globals.fs.file(globals.fs.path.join(projectDir.path, xcodeProjectPath));
     final String xcodeProject = xcodeProjectFile.readAsStringSync();
     expect(xcodeProject, contains('PRODUCT_BUNDLE_IDENTIFIER = com.foo.bar.flutterProject'));
-    expect(xcodeProject, contains('LastUpgradeCheck = 1430;'));
+    expect(xcodeProject, contains('LastUpgradeCheck = 1510;'));
     // Xcode workspace shared data
     final Directory workspaceSharedData = globals.fs.directory(globals.fs.path.join('.ios', 'Runner.xcworkspace', 'xcshareddata'));
     expectExists(workspaceSharedData.childFile('WorkspaceSettings.xcsettings').path);
@@ -1344,7 +1468,7 @@ void main() {
     final File xcodeProjectFile = globals.fs.file(globals.fs.path.join(projectDir.path, xcodeProjectPath));
     final String xcodeProject = xcodeProjectFile.readAsStringSync();
     expect(xcodeProject, contains('PRODUCT_BUNDLE_IDENTIFIER = com.foo.bar.flutterProject'));
-    expect(xcodeProject, contains('LastUpgradeCheck = 1430;'));
+    expect(xcodeProject, contains('LastUpgradeCheck = 1510;'));
     // Xcode workspace shared data
     final Directory workspaceSharedData = globals.fs.directory(globals.fs.path.join('ios', 'Runner.xcworkspace', 'xcshareddata'));
     expectExists(workspaceSharedData.childFile('WorkspaceSettings.xcsettings').path);
@@ -1562,6 +1686,36 @@ void main() {
     expect(displayName, 'My Project');
   });
 
+  testUsingContext('should not show --ios-language deprecation warning issue for Swift', () async {
+    Cache.flutterRoot = '../..';
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await runner.run(<String>['create', '--no-pub', '--ios-language=swift', projectDir.path]);
+    expect(logger.warningText, contains('The "ios-language" option is deprecated and will be removed in a future Flutter release.'));
+    expect(logger.warningText, isNot(contains('https://github.com/flutter/flutter/issues/148586')));
+
+  }, overrides: <Type, Generator>{
+    FeatureFlags: () => TestFeatureFlags(),
+    Logger: () => logger,
+  });
+
+  testUsingContext('should show --ios-language deprecation warning issue for Objective-C', () async {
+    Cache.flutterRoot = '../..';
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await runner.run(<String>['create', '--no-pub', '--ios-language=objc', projectDir.path]);
+    expect(logger.warningText, contains('The "ios-language" option is deprecated and will be removed in a future Flutter release.'));
+    expect(logger.warningText, contains('https://github.com/flutter/flutter/issues/148586'));
+
+  }, overrides: <Type, Generator>{
+    FeatureFlags: () => TestFeatureFlags(),
+    Logger: () => logger,
+  });
+
   testUsingContext('has correct content and formatting with macOS app template', () async {
     Cache.flutterRoot = '../..';
 
@@ -1589,7 +1743,7 @@ void main() {
     final File xcodeProjectFile = globals.fs.file(globals.fs.path.join(projectDir.path, xcodeProjectPath));
     final String xcodeProject = xcodeProjectFile.readAsStringSync();
     expect(xcodeProject, contains('path = "flutter_project.app";'));
-    expect(xcodeProject, contains('LastUpgradeCheck = 1430;'));
+    expect(xcodeProject, contains('LastUpgradeCheck = 1510;'));
 
     // Xcode workspace shared data
     final Directory workspaceSharedData = globals.fs.directory(globals.fs.path.join('macos', 'Runner.xcworkspace', 'xcshareddata'));
@@ -1847,7 +2001,7 @@ void main() {
     );
   });
 
-  testUsingContext('can re-gen plugin ios/ and example/ folders, reusing custom org', () async {
+  testUsingContext('can re-gen plugin ios/ and example/ folders, reusing custom org, without Swift Package Manager', () async {
     await _createProject(
       projectDir,
       <String>[
@@ -1872,6 +2026,7 @@ void main() {
       unexpectedPaths: <String>[
         'example/android/app/src/main/java/com/example/flutter_project_example/MainActivity.java',
         'android/src/main/java/com/example/flutter_project/FlutterProjectPlugin.java',
+        'ios/flutter_project/Sources/flutter_project/include/flutter_project/FlutterProjectPlugin.h',
       ],
     );
     final FlutterProject project = FlutterProject.fromDirectory(projectDir);
@@ -1879,6 +2034,48 @@ void main() {
       await project.example.ios.productBundleIdentifier(BuildInfo.debug),
       'com.bar.foo.flutterProjectExample',
     );
+  }, overrides: <Type, Generator>{
+    // Test flags disable Swift Package Manager.
+    FeatureFlags: () => TestFeatureFlags(),
+  });
+
+  testUsingContext('can re-gen plugin ios/ and example/ folders, reusing custom org, with Swift Package Manager', () async {
+    await _createProject(
+      projectDir,
+      <String>[
+        '--no-pub',
+        '--template=plugin',
+        '--org', 'com.bar.foo',
+        '-i', 'objc',
+        '-a', 'java',
+        '--platforms', 'ios,android',
+      ],
+      <String>[],
+    );
+    projectDir.childDirectory('example').deleteSync(recursive: true);
+    projectDir.childDirectory('ios').deleteSync(recursive: true);
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--template=plugin', '-i', 'objc', '-a', 'java', '--platforms', 'ios,android'],
+      <String>[
+        'example/android/app/src/main/java/com/bar/foo/flutter_project_example/MainActivity.java',
+        'ios/flutter_project/Sources/flutter_project/include/flutter_project/FlutterProjectPlugin.h',
+      ],
+      unexpectedPaths: <String>[
+        'example/android/app/src/main/java/com/example/flutter_project_example/MainActivity.java',
+        'android/src/main/java/com/example/flutter_project/FlutterProjectPlugin.java',
+        'ios/Classes/FlutterProjectPlugin.h',
+      ],
+    );
+    final FlutterProject project = FlutterProject.fromDirectory(projectDir);
+    expect(
+      await project.example.ios.productBundleIdentifier(BuildInfo.debug),
+      'com.bar.foo.flutterProjectExample',
+    );
+  }, overrides: <Type, Generator>{
+    FeatureFlags: () => TestFeatureFlags(
+      isSwiftPackageManagerEnabled: true,
+    ),
   });
 
   testUsingContext('fails to re-gen without specified org when org is ambiguous', () async {
@@ -2005,6 +2202,7 @@ void main() {
         'ios/Flutter/AppFrameworkInfo.plist',
       ],
       unexpectedPaths: <String>['test'],
+      expectedGitignoreLines: flutterPluginsIgnores,
     );
     expect(projectDir.childDirectory('lib').childFile('main.dart').readAsStringSync(),
       contains("Text('Hello World!')"));
@@ -2014,6 +2212,72 @@ void main() {
       isNot(contains('#')));
     expect(projectDir.childFile('README.md').readAsStringSync(),
       isNot(contains('Getting Started')));
+  });
+
+
+  testUsingContext("can't create an empty non-application project", () async {
+    final String outputDir = globals.fs.path.join(tempDir.path, 'test_project');
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+    final List<String> args = <String>[
+      'create',
+      '--no-pub',
+      '--empty',
+      '--template=plugin',
+      outputDir,
+    ];
+
+    await expectLater(
+      runner.run(args),
+      throwsToolExit(
+        message: 'The --empty flag is only supported for the app template.',
+    ));
+  });
+
+  testUsingContext('does not remove an existing test/ directory when recreating an application project with the --empty flag', () async {
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--empty'],
+      <String>[],
+    );
+
+    projectDir.childDirectory('test').childFile('example_test.dart').createSync(recursive: true);
+
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--empty'],
+      <String>['test/example_test.dart'],
+    );
+
+    expect(projectDir.childDirectory('test').childFile('example_test.dart'), exists);
+  });
+
+  testUsingContext('does not create a test/ directory when creating a new application project with the --empty flag', () async {
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--empty'],
+      <String>[],
+      unexpectedPaths: <String>['test'],
+    );
+
+    expect(projectDir.childDirectory('test'), isNot(exists));
+  });
+
+  testUsingContext("does not create a test/ directory, if it doesn't already exist, when recreating an application project with the --empty flag", () async {
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--empty'],
+      <String>[],
+    );
+
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--empty'],
+      <String>[],
+      unexpectedPaths: <String>['test'],
+    );
+
+    expect(projectDir.childDirectory('test'), isNot(exists));
   });
 
   testUsingContext('can create a sample-based project', () async {
@@ -2027,6 +2291,7 @@ void main() {
         'ios/Flutter/AppFrameworkInfo.plist',
       ],
       unexpectedPaths: <String>['test'],
+      expectedGitignoreLines: flutterPluginsIgnores,
     );
     expect(projectDir.childDirectory('lib').childFile('main.dart').readAsStringSync(),
       contains('void main() {}'));
@@ -2035,7 +2300,7 @@ void main() {
       return () {
         return FakeHttpClient.list(<FakeRequest>[
           FakeRequest(
-            Uri.parse('https://master-api.flutter.dev/snippets/foo.bar.Baz.dart'),
+            Uri.parse('https://main-api.flutter.dev/snippets/foo.bar.Baz.dart'),
             response: FakeResponse(body: utf8.encode('void main() {}')),
           ),
         ]);
@@ -2058,7 +2323,7 @@ void main() {
       return () {
         return FakeHttpClient.list(<FakeRequest>[
           FakeRequest(
-            Uri.parse('https://master-api.flutter.dev/snippets/foo.bar.Baz.dart'),
+            Uri.parse('https://main-api.flutter.dev/snippets/foo.bar.Baz.dart'),
             response: FakeResponse(body: utf8.encode('void main() { String? foo; print(foo); } // ignore: avoid_print')),
           ),
         ]);
@@ -2085,7 +2350,7 @@ void main() {
       return () {
         return FakeHttpClient.list(<FakeRequest>[
           FakeRequest(
-            Uri.parse('https://master-api.flutter.dev/snippets/index.json'),
+            Uri.parse('https://main-api.flutter.dev/snippets/index.json'),
             response: FakeResponse(body: utf8.encode(samplesIndexJson)),
           ),
         ]);
@@ -2114,7 +2379,7 @@ void main() {
       return () {
         return FakeHttpClient.list(<FakeRequest>[
           FakeRequest(
-            Uri.parse('https://master-api.flutter.dev/snippets/index.json'),
+            Uri.parse('https://main-api.flutter.dev/snippets/index.json'),
           ),
         ]);
       };
@@ -2138,7 +2403,7 @@ void main() {
       return () {
         return FakeHttpClient.list(<FakeRequest>[
           FakeRequest(
-            Uri.parse('https://master-api.flutter.dev/snippets/index.json'),
+            Uri.parse('https://main-api.flutter.dev/snippets/index.json'),
             response: const FakeResponse(statusCode: HttpStatus.notFound),
           ),
         ]);
@@ -2807,7 +3072,7 @@ void main() {
     expect(env['flutter']!.allows(Version(3, 2, 9)), false);
   });
 
-  testUsingContext('newly created iOS plugins has min iOS version of 11.0', () async {
+  testUsingContext('newly created iOS plugins has correct min iOS version', () async {
     Cache.flutterRoot = '../..';
     final String flutterToolsAbsolutePath = globals.fs.path.join(
       Cache.flutterRoot!,
@@ -2840,7 +3105,7 @@ void main() {
 
     for (final String templatePath in iosPluginTemplates) {
       final String rawTemplate = globals.fs.file(templatePath).readAsStringSync();
-      expect(rawTemplate, contains("s.platform = :ios, '11.0'"));
+      expect(rawTemplate, contains("s.platform = :ios, '12.0'"));
     }
 
     final CreateCommand command = CreateCommand();
@@ -2850,7 +3115,7 @@ void main() {
     expect(projectDir.childDirectory('ios').childFile('flutter_project.podspec'),
         exists);
     final String rawPodSpec = await projectDir.childDirectory('ios').childFile('flutter_project.podspec').readAsString();
-    expect(rawPodSpec, contains("s.platform = :ios, '11.0'"));
+    expect(rawPodSpec, contains("s.platform = :ios, '12.0'"));
   });
 
   testUsingContext('default app uses flutter default versions', () async {
@@ -2865,9 +3130,10 @@ void main() {
 
     final String buildContent = await globals.fs.file('${projectDir.path}/android/app/build.gradle').readAsString();
 
-    expect(buildContent.contains('compileSdkVersion flutter.compileSdkVersion'), true);
-    expect(buildContent.contains('ndkVersion flutter.ndkVersion'), true);
-    expect(buildContent.contains('targetSdkVersion flutter.targetSdkVersion'), true);
+    expect(buildContent.contains('compileSdk = flutter.compileSdkVersion'), true);
+    expect(buildContent.contains('ndkVersion = flutter.ndkVersion'), true);
+    expect(buildContent.contains('minSdk = flutter.minSdkVersion'), true);
+    expect(buildContent.contains('targetSdk = flutter.targetSdkVersion'), true);
   });
 
   testUsingContext('Android Java plugin contains namespace', () async {
@@ -2889,9 +3155,7 @@ void main() {
 
     final String buildGradleContent = await buildGradleFile.readAsString();
 
-    expect(buildGradleContent.contains("namespace 'com.bar.foo.flutter_project'"), true);
-    // The namespace should be conditionalized for AGP <4.2.
-    expect(buildGradleContent.contains('if (project.android.hasProperty("namespace")) {'), true);
+    expect(buildGradleContent.contains('namespace = "com.bar.foo.flutter_project"'), true);
   });
 
   testUsingContext('Android FFI plugin contains namespace', () async {
@@ -2912,9 +3176,37 @@ void main() {
 
     final String buildGradleContent = await buildGradleFile.readAsString();
 
-    expect(buildGradleContent.contains("namespace 'com.bar.foo.flutter_project'"), true);
-    // The namespace should be conditionalized for AGP <4.2.
-    expect(buildGradleContent.contains('if (project.android.hasProperty("namespace")) {'), true);
+    expect(buildGradleContent.contains('namespace = "com.bar.foo.flutter_project"'), true);
+  });
+
+  testUsingContext('Android FFI plugin contains 16kb page support', () async {
+    Cache.flutterRoot = '../..';
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await runner.run(<String>[
+      'create',
+      '--no-pub',
+      '-t',
+      'plugin_ffi',
+      '--org',
+      'com.bar.foo',
+      '--platforms=android',
+      projectDir.path
+    ]);
+
+    final File cmakeLists =
+        globals.fs.file('${projectDir.path}/src/CMakeLists.txt');
+
+    expect(cmakeLists.existsSync(), true);
+
+    final String cmakeListsContent = await cmakeLists.readAsString();
+    // If we ever change the flags, this should be accounted for in the
+    // migration as well:
+    // lib/src/android/migrations/cmake_android_16k_pages_migration.dart
+    const String expected16KbFlags = 'PRIVATE "-Wl,-z,max-page-size=16384")';
+    expect(cmakeListsContent, contains(expected16KbFlags));
   });
 
   testUsingContext('Android Kotlin plugin contains namespace', () async {
@@ -2936,9 +3228,55 @@ void main() {
 
     final String buildGradleContent = await buildGradleFile.readAsString();
 
-    expect(buildGradleContent.contains("namespace 'com.bar.foo.flutter_project'"), true);
-    // The namespace should be conditionalized for AGP <4.2.
-    expect(buildGradleContent.contains('if (project.android.hasProperty("namespace")) {'), true);
+    expect(buildGradleContent.contains('namespace = "com.bar.foo.flutter_project"'), true);
+  });
+
+  testUsingContext('Android Java plugin sets explicit compatibility version', () async {
+    Cache.flutterRoot = '../..';
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await runner.run(<String>['create', '--no-pub',
+      '-t', 'plugin',
+      '--org', 'com.bar.foo',
+      '-a', 'java',
+      '--platforms=android',
+      projectDir.path]);
+
+    final File buildGradleFile = globals.fs.file('${projectDir.path}/android/build.gradle');
+
+    expect(buildGradleFile.existsSync(), true);
+
+    final String buildGradleContent = await buildGradleFile.readAsString();
+
+    expect(buildGradleContent.contains('sourceCompatibility = JavaVersion.VERSION_11'), true);
+    expect(buildGradleContent.contains('targetCompatibility = JavaVersion.VERSION_11'), true);
+  });
+
+  testUsingContext('Android Kotlin plugin sets explicit compatibility version', () async {
+    Cache.flutterRoot = '../..';
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await runner.run(<String>['create', '--no-pub',
+      '-t', 'plugin',
+      '--org', 'com.bar.foo',
+      '-a', 'kotlin',
+      '--platforms=android',
+      projectDir.path]);
+
+    final File buildGradleFile = globals.fs.file('${projectDir.path}/android/build.gradle');
+
+    expect(buildGradleFile.existsSync(), true);
+
+    final String buildGradleContent = await buildGradleFile.readAsString();
+
+    expect(buildGradleContent.contains('sourceCompatibility = JavaVersion.VERSION_11'), true);
+    expect(buildGradleContent.contains('targetCompatibility = JavaVersion.VERSION_11'), true);
+    // jvmTarget should be set to the same value.
+    expect(buildGradleContent.contains('jvmTarget = JavaVersion.VERSION_11'), true);
   });
 
   testUsingContext('Flutter module Android project contains namespace', () async {
@@ -2959,18 +3297,11 @@ void main() {
     final String moduleFlutterBuildGradleFileContent = await globals.fs.file(globals.fs.path.join(projectDir.path, moduleFlutterBuildGradleFilePath)).readAsString();
 
     // Each build file should contain the expected namespace.
-    const String expectedNameSpace = "namespace 'com.bar.foo.flutter_project'";
+    const String expectedNameSpace = 'namespace = "com.bar.foo.flutter_project"';
     expect(moduleBuildGradleFileContent.contains(expectedNameSpace), true);
     expect(moduleFlutterBuildGradleFileContent.contains(expectedNameSpace), true);
-    const String expectedHostNameSpace = 'namespace "com.bar.foo.flutter_project.host"';
+    const String expectedHostNameSpace = 'namespace = "com.bar.foo.flutter_project.host"';
     expect(moduleAppBuildGradleFileContent.contains(expectedHostNameSpace), true);
-
-    // The namespaces should be conditionalized for AGP <4.2.
-    const String expectedConditional = 'if (project.android.hasProperty("namespace")) {';
-    expect(moduleBuildGradleFileContent.contains(expectedConditional), true);
-    expect(moduleAppBuildGradleFileContent.contains(expectedConditional), true);
-    expect(moduleFlutterBuildGradleFileContent.contains(expectedConditional), true);
-
   }, overrides: <Type, Generator>{
     Pub: () => Pub.test(
       fileSystem: globals.fs,
@@ -3148,7 +3479,7 @@ void main() {
     await runner.run(<String>['create', '--no-pub', '--template=plugin', projectDir.path]);
     expect(logger.errorText, contains(_kNoPlatformsMessage));
     expect(logger.statusText, contains('To add platforms, run `flutter create -t plugin --platforms <platforms> .` under ${globals.fs.path.normalize(globals.fs.path.relative(projectDir.path))}.'));
-    expect(logger.statusText, contains('For more information, see https://flutter.dev/go/plugin-platforms.'));
+    expect(logger.statusText, contains('For more information, see https://flutter.dev/to/pubspec-plugin-platforms.'));
 
   }, overrides: <Type, Generator>{
     FeatureFlags: () => TestFeatureFlags(),
@@ -3164,7 +3495,7 @@ void main() {
     await runner.run(<String>['create', '--no-pub', '--template=plugin_ffi', projectDir.path]);
     expect(logger.errorText, contains(_kNoPlatformsMessage));
     expect(logger.statusText, contains('To add platforms, run `flutter create -t plugin_ffi --platforms <platforms> .` under ${globals.fs.path.normalize(globals.fs.path.relative(projectDir.path))}.'));
-    expect(logger.statusText, contains('For more information, see https://flutter.dev/go/plugin-platforms.'));
+    expect(logger.statusText, contains('For more information, see https://flutter.dev/to/pubspec-plugin-platforms.'));
 
   }, overrides: <Type, Generator>{
     FeatureFlags: () => TestFeatureFlags(),
@@ -3304,6 +3635,27 @@ void main() {
     final String rawPubspec = await projectDir.childFile('pubspec.yaml').readAsString();
     final Pubspec pubspec = Pubspec.parse(rawPubspec);
     expect(pubspec.description, 'a: b');
+  });
+
+  testUsingContext('should use caret syntax in SDK version', () async {
+    await _createProject(
+      projectDir,
+      <String>[
+        '--no-pub',
+      ],
+      <String>[
+        'pubspec.yaml',
+      ],
+    );
+
+    final String rawPubspec = await projectDir.childFile('pubspec.yaml').readAsString();
+    final Pubspec pubspec = Pubspec.parse(rawPubspec);
+
+    expect(
+      pubspec.environment!['sdk'].toString(),
+      startsWith('^'),
+      reason: 'The caret syntax is recommended over the traditional syntax.',
+    );
   });
 
   testUsingContext('create an FFI plugin with ios, then add macos', () async {
@@ -3574,7 +3926,7 @@ void main() {
       logger.clear();
     }
   }, overrides: <Type, Generator>{
-    Java: () => FakeJava(version: const software.Version.withText(14, 0, 0, '14.0.0')), // Middle compatible Java version with current template AGP/Gradle versions.
+    Java: () => FakeJava(version: const software.Version.withText(20, 0, 0, '20.0.0')), // Middle compatible Java version with current template AGP/Gradle versions.
     Logger: () => logger,
   });
 
@@ -3601,7 +3953,7 @@ void main() {
       logger.clear();
     }
   }, overrides: <Type, Generator>{
-    Java: () => FakeJava(version: const software.Version.withText(17, 0, 0, '18.0.0')), // Maximum compatible Java version with current template AGP/Gradle versions.
+    Java: () => FakeJava(version: const software.Version.withText(17, 0, 0, '22.0.0')), // Maximum compatible Java version with current template AGP/Gradle versions.
     Logger: () => logger,
   });
 
@@ -3628,7 +3980,7 @@ void main() {
       logger.clear();
     }
   }, overrides: <Type, Generator>{
-    Java: () => FakeJava(version: const software.Version.withText(11, 0, 0, '11.0.0')), // Minimum compatible Java version with current template AGP/Gradle versions.
+    Java: () => FakeJava(version: const software.Version.withText(17, 0, 0, '17.0.0')), // Minimum compatible Java version with current template AGP/Gradle versions.
     Logger: () => logger,
   });
 
@@ -3657,6 +4009,55 @@ void main() {
 
     expect(rawManifestJson.contains(expectedDescription), isTrue);
   });
+
+  testUsingContext('flutter create should tool exit if the template manifest cannot be read', () async {
+    globals.fs.file(globals.fs.path.join(
+      Cache.flutterRoot!,
+      'packages',
+      'flutter_tools',
+      'templates',
+      'template_manifest.json',
+    )).createSync(recursive: true);
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await expectLater(
+      runner.run(<String>[
+        'create',
+        '--no-pub',
+        '--template=plugin',
+        '--project-name=test',
+        'dev/test',
+      ]),
+      throwsToolExit(message: 'Unable to read the template manifest at path'),
+    );
+  }, overrides: <Type, Generator>{
+    FileSystem: () => MemoryFileSystem.test(
+      opHandle: (String context, FileSystemOp operation) {
+        if (operation == FileSystemOp.read && context.contains('template_manifest.json')) {
+          throw io.PathNotFoundException(context, const OSError(), 'Cannot open file');
+        }
+      },
+    ),
+    ProcessManager: () => fakeProcessManager,
+  });
+
+  testUsingContext('flutter create should show the incompatible java AGP message', () async {
+    Cache.flutterRoot = '../..';
+
+    final CreateCommand command = CreateCommand();
+    final CommandRunner<void> runner = createTestCommandRunner(command);
+
+    await runner.run(<String>['create', '--no-pub', '--platforms=android', projectDir.path]);
+
+    final String expectedMessage = getIncompatibleJavaGradleAgpMessageHeader(false, templateDefaultGradleVersion, templateAndroidGradlePluginVersion, 'app');
+
+    expect(logger.warningText, contains(expectedMessage));
+  }, overrides: <Type, Generator>{
+    Java: () => FakeJava(version: const software.Version.withText(500, 0, 0, '500.0.0')), // Too high a version for template Gradle versions.
+    Logger: () => logger,
+  });
 }
 
 Future<void> _createProject(
@@ -3664,6 +4065,7 @@ Future<void> _createProject(
   List<String> createArgs,
   List<String> expectedPaths, {
   List<String> unexpectedPaths = const <String>[],
+  List<String> expectedGitignoreLines = const <String>[],
 }) async {
   Cache.flutterRoot = '../..';
   final CreateCommand command = CreateCommand();
@@ -3679,7 +4081,7 @@ Future<void> _createProject(
     return globals.fs.typeSync(fullPath) != FileSystemEntityType.notFound;
   }
 
-  final List<String> failures = <String>[
+  final List<String> pathFailures = <String>[
     for (final String path in expectedPaths)
       if (!pathExists(path))
         'Path "$path" does not exist.',
@@ -3687,7 +4089,17 @@ Future<void> _createProject(
       if (pathExists(path))
         'Path "$path" exists when it shouldn\'t.',
   ];
-  expect(failures, isEmpty, reason: failures.join('\n'));
+  expect(pathFailures, isEmpty, reason: pathFailures.join('\n'));
+
+  final String gitignorePath = globals.fs.path.join(dir.path, '.gitignore');
+  final List<String> gitignore = globals.fs.file(gitignorePath).readAsLinesSync();
+
+  final List<String> gitignoreFailures = <String>[
+    for (final String line in expectedGitignoreLines)
+      if (!gitignore.contains(line))
+        'Expected .gitignore to contain "$line".',
+  ];
+  expect(gitignoreFailures, isEmpty, reason: gitignoreFailures.join('\n'));
 }
 
 Future<void> _createAndAnalyzeProject(
@@ -3695,8 +4107,15 @@ Future<void> _createAndAnalyzeProject(
   List<String> createArgs,
   List<String> expectedPaths, {
   List<String> unexpectedPaths = const <String>[],
+  List<String> expectedGitignoreLines = const <String>[],
 }) async {
-  await _createProject(dir, createArgs, expectedPaths, unexpectedPaths: unexpectedPaths);
+  await _createProject(
+    dir,
+    createArgs,
+    expectedPaths,
+    unexpectedPaths: unexpectedPaths,
+    expectedGitignoreLines: expectedGitignoreLines,
+  );
   await _analyzeProject(dir.path);
 }
 
